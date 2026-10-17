@@ -1,0 +1,11 @@
+# Build the slim render worker image from Dockerfile.worker.
+#   gcloud builds submit --config cloudbuild.worker.yaml --substitutions=_IMAGE=<uri> .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'Dockerfile.worker', '-t', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'
+substitutions:
+  _IMAGE: us-central1-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/takeone-worker:latest
+options:
+  logging: CLOUD_LOGGING_ONLY

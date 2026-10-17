@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+dist-worker/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+design-shots/
+.taste-skill/
+test-results/
+playwright-report/
+.claude/settings.local.json
+*.pem
+service-account*.json

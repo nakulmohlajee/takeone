@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@keyframes takeonePrompterIn {
+  from {
+    opacity: 0.35;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Bottom sheet entrance (shot setup reminder). */
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Home showcase (HomeShowcase.tsx): phone order intro → ideas → phone → lines → action;
+   desktop puts the phone in its own column beside the rest. */
+.showcase-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'intro' 'tabs' 'phone' 'lines' 'cta';
+  row-gap: 1.75rem;
+}
+@media (min-width: 1024px) {
+  .showcase-grid {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'intro phone' 'tabs phone' 'lines phone' 'cta phone';
+    column-gap: 4rem;
+    row-gap: 2rem;
+    align-content: center;
+  }
+}
+
+/* Home showcase (HomeShowcase.tsx). */
+@keyframes showcase-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes showcase-drift {
+  from { transform: scale(1.04) translate3d(0, 0, 0); }
+  to { transform: scale(1.14) translate3d(-1.5%, -1%, 0); }
+}
+@keyframes showcase-pop {
+  from { opacity: 0; transform: scale(0.6) rotate(-4deg); }
+  to { opacity: 1; transform: scale(1) rotate(-2deg); }
+}
+@keyframes showcase-word {
+  from { transform: scale(1); }
+  50% { transform: scale(1.18); }
+  to { transform: scale(1.06); }
+}
+@keyframes showcase-marquee {
+  from { transform: translate3d(0, 0, 0); }
+  /* the list is doubled; half its width plus half a gap brings frame 1 back to the start */
+  to { transform: translate3d(calc(-50% - 8px), 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*='animate-[sheet-in'],
+  [class*='animate-[takeonePrompterIn'],
+  [class*='animate-[showcase-'] {
+    animation: none !important;
+  }
+}

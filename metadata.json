@@ -1,0 +1,11 @@
+{
+  "name": "TakeOne — AI Director & Video Co-Pilot",
+  "description": "You're the actor. TakeOne is the director and editor. Turn rough ideas into guided shot-by-shot filming and auto-assembled videos with AI cutaways.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

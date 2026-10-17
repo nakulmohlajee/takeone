@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "takeone-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "server.ts"],
+      "port": 3000
+    }
+  ]
+}

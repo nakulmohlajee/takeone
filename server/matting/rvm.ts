@@ -20,7 +20,8 @@ type Ort = typeof import('onnxruntime-node');
 const MODEL_FILE = 'rvm_mobilenetv3_fp32.onnx';
 /** Long side of the matting resolution. The export upsizes to 1080p; hair detail holds at 1280. */
 const MAX_SIDE = Number(process.env.MATTE_MAX_SIDE) || 1280;
-const FPS = 30;
+/** Talking-head video at 24 fps looks the same and is 20% less work than 30. */
+const FPS = Number(process.env.MATTE_FPS) || 24;
 
 export type MatteOptions = {
   inputPath: string;
@@ -46,21 +47,47 @@ function modelPath(): string {
   return hit;
 }
 
-let sessionPromise: Promise<{ ort: Ort; session: import('onnxruntime-node').InferenceSession }> | null = null;
-function getSession() {
-  if (!sessionPromise) {
-    sessionPromise = (async () => {
-      const ort = await import('onnxruntime-node');
-      const session = await ort.InferenceSession.create(modelPath(), {
-        // Past ~4 threads the matmuls stop scaling (and efficiency cores slow them down).
-        intraOpNumThreads: Number(process.env.MATTE_THREADS) || Math.max(1, Math.min(4, os.cpus().length)),
+type Session = import('onnxruntime-node').InferenceSession;
+const sessions: Array<Promise<Session>> = [];
+let ortPromise: Promise<Ort> | null = null;
+
+/** CPU threads per RVM run: past ~4 the matmuls stop scaling. */
+function threadsPerLane(): number {
+  return Number(process.env.MATTE_THREADS) || Math.max(1, Math.min(4, os.cpus().length));
+}
+
+/**
+ * Parallel lanes: each one mattes its own stretch of the take on its own threads. Helps on
+ * machines with real cores; on Cloud Run (vCPUs are hyperthreads) one lane measured fastest,
+ * so the service sets MATTE_LANES=1.
+ */
+export function laneCount(): number {
+  if (process.env.MATTE_LANES) return Math.max(1, Number(process.env.MATTE_LANES) || 1);
+  return Math.max(1, Math.floor(os.cpus().length / threadsPerLane()));
+}
+
+function getOrt(): Promise<Ort> {
+  if (!ortPromise) ortPromise = import('onnxruntime-node');
+  return ortPromise;
+}
+
+function getSession(lane: number): Promise<Session> {
+  if (!sessions[lane]) {
+    sessions[lane] = getOrt().then((ort) =>
+      ort.InferenceSession.create(modelPath(), {
+        intraOpNumThreads: threadsPerLane(),
+        interOpNumThreads: 1,
         graphOptimizationLevel: 'all',
-      });
-      return { ort, session };
-    })();
-    sessionPromise.catch(() => (sessionPromise = null));
+      })
+    );
+    sessions[lane].catch(() => delete sessions[lane]);
   }
-  return sessionPromise;
+  return sessions[lane];
+}
+
+/** Load the model ahead of the first job (warm service). */
+export async function warmUp(): Promise<void> {
+  await Promise.all(Array.from({ length: laneCount() }, (_, i) => getSession(i)));
 }
 
 function probe(file: string): Promise<{ width: number; height: number; duration: number; hasAudio: boolean }> {
@@ -228,34 +255,40 @@ function frameReader(stream: NodeJS.ReadableStream, n: number) {
 
 function write(proc: ChildProcessWithoutNullStreams, data: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (proc.stdin.write(data)) resolve();
-    else proc.stdin.once('drain', resolve);
-    proc.stdin.once('error', reject);
+    if (proc.stdin.write(data)) return resolve();
+    const onErr = (e: Error) => reject(e);
+    proc.stdin.once('error', onErr);
+    proc.stdin.once('drain', () => {
+      proc.stdin.off('error', onErr);
+      resolve();
+    });
   });
 }
 
-export async function matteVideo(opts: MatteOptions): Promise<MatteResult> {
-  const t0 = Date.now();
-  const { ort, session } = await getSession();
-  const info = await probe(opts.inputPath);
-  const { crop, out } = planGeometry(info.width, info.height, opts.aspectRatio);
-  const W = out.w;
-  const H = out.h;
-  const bg = await readBackground(opts.backgroundPath, W, H);
-  const totalFrames = Math.max(1, Math.round(info.duration * FPS));
+type Lane = { from: number; len: number; file: string };
 
+/** Matte one stretch of the take (video only) into `lane.file`; returns frames written. */
+async function matteLane(
+  lane: Lane,
+  laneIdx: number,
+  g: { crop: ReturnType<typeof planGeometry>['crop']; W: number; H: number; bg: Buffer; input: string },
+  onFrame: () => void
+): Promise<number> {
+  const ort = await getOrt();
+  const session = await getSession(laneIdx);
+  const { crop, W, H, bg } = g;
   const decoder = spawn('ffmpeg', [
-    '-nostdin', '-v', 'error', '-i', opts.inputPath,
+    '-nostdin', '-v', 'error',
+    ...(lane.from > 0 ? ['-ss', lane.from.toFixed(3)] : []),
+    '-i', g.input,
+    ...(Number.isFinite(lane.len) ? ['-t', lane.len.toFixed(3)] : []),
     '-vf', `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},scale=${W}:${H}:flags=bicubic,fps=${FPS}`,
-    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+    '-an', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
   ]) as ChildProcessWithoutNullStreams;
   const encoder = spawn('ffmpeg', [
     '-nostdin', '-v', 'error', '-y',
     '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-r', String(FPS), '-i', 'pipe:0',
-    '-i', opts.inputPath,
-    '-map', '0:v:0', ...(info.hasAudio ? ['-map', '1:a:0', '-c:a', 'aac', '-b:a', '160k'] : []),
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p',
-    '-movflags', '+faststart', '-shortest', opts.outputPath,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', lane.file,
   ]) as ChildProcessWithoutNullStreams;
   let encErr = '';
   encoder.stderr.on('data', (d) => (encErr += d));
@@ -284,11 +317,7 @@ export async function matteVideo(opts: MatteOptions): Promise<MatteResult> {
         src[plane + i] = f[j + 1] / 255;
         src[2 * plane + i] = f[j + 2] / 255;
       }
-      const res = await session.run({
-        src: new ort.Tensor('float32', src, [1, 3, H, W]),
-        ...rec,
-        downsample_ratio: ratio,
-      });
+      const res = await session.run({ src: new ort.Tensor('float32', src, [1, 3, H, W]), ...rec, downsample_ratio: ratio });
       rec = { r1i: res.r1o, r2i: res.r2o, r3i: res.r3o, r4i: res.r4o };
       const fgr = res.fgr.data as Float32Array;
       const pha = keepMainPerson(res.pha.data as Float32Array, W, H);
@@ -301,17 +330,70 @@ export async function matteVideo(opts: MatteOptions): Promise<MatteResult> {
       }
       await write(encoder, outFrame);
       frames++;
-      if (frames % 15 === 0) {
-        const secs = (Date.now() - t0) / 1000;
-        opts.onProgress?.(Math.min(0.99, frames / totalFrames), frames / secs);
-      }
+      onFrame();
     }
   } finally {
     encoder.stdin.end();
     decoder.kill('SIGKILL');
   }
   await encDone;
-  if (!frames) throw new Error('No frames decoded from the take');
+  return frames;
+}
+
+function run(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', ['-nostdin', '-v', 'error', '-y', ...args]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.slice(-300)))));
+  });
+}
+
+/**
+ * The take is split into one stretch per lane, matted in parallel, then joined (no re-encode)
+ * and given the take's own audio. RVM restarts its memory at each join; with ≥8 s stretches
+ * that settles within a few frames.
+ */
+export async function matteVideo(opts: MatteOptions): Promise<MatteResult> {
+  const t0 = Date.now();
+  const info = await probe(opts.inputPath);
+  const { crop, out } = planGeometry(info.width, info.height, opts.aspectRatio);
+  const W = out.w;
+  const H = out.h;
+  const bg = await readBackground(opts.backgroundPath, W, H);
+  const totalFrames = Math.max(1, Math.round(info.duration * FPS));
+
+  const lanesWanted = info.duration > 0 ? Math.min(laneCount(), Math.max(1, Math.floor(info.duration / 8))) : 1;
+  const base = path.join(path.dirname(opts.outputPath), `lane-${Date.now()}`);
+  // Stretch boundaries on whole frames so the joined video keeps its exact length.
+  const step = Math.ceil((info.duration * FPS) / lanesWanted) / FPS;
+  const lanes: Lane[] = Array.from({ length: lanesWanted }, (_, i) => ({
+    from: i * step,
+    len: i === lanesWanted - 1 ? Infinity : step,
+    file: `${base}-${i}.mp4`,
+  }));
+
+  let frames = 0;
+  const onFrame = () => {
+    frames++;
+    if (frames % 15 === 0) opts.onProgress?.(Math.min(0.99, frames / totalFrames), frames / ((Date.now() - t0) / 1000));
+  };
+  try {
+    const counts = await Promise.all(lanes.map((l, i) => matteLane(l, i, { crop, W, H, bg, input: opts.inputPath }, onFrame)));
+    if (!counts.some(Boolean)) throw new Error('No frames decoded from the take');
+    const list = `${base}.txt`;
+    await fs.promises.writeFile(list, lanes.filter((_, i) => counts[i]).map((l) => `file '${l.file}'`).join('\n'));
+    await run([
+      '-f', 'concat', '-safe', '0', '-i', list,
+      '-i', opts.inputPath,
+      '-map', '0:v:0', ...(info.hasAudio ? ['-map', '1:a:0', '-c:a', 'aac', '-b:a', '160k'] : []),
+      '-c:v', 'copy', '-movflags', '+faststart', '-shortest', opts.outputPath,
+    ]);
+  } finally {
+    for (const l of lanes) await fs.promises.rm(l.file, { force: true }).catch(() => {});
+    await fs.promises.rm(`${base}.txt`, { force: true }).catch(() => {});
+  }
   const seconds = (Date.now() - t0) / 1000;
   opts.onProgress?.(1, frames / seconds);
   return { frames, seconds, fps: frames / seconds, width: W, height: H };

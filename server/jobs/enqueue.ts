@@ -110,8 +110,48 @@ async function enqueueCloudRunJob(kind: WorkerKind, id?: string): Promise<boolea
   return false;
 }
 
+/**
+ * Hand a matte job to the warm matting service (MATTE_SERVICE_URL), authenticated with an ID
+ * token from the metadata server. False when there is no service or it didn't accept the job.
+ */
+async function sendToMatteService(id: string): Promise<boolean> {
+  const base = process.env.MATTE_SERVICE_URL?.trim().replace(/\/$/, '');
+  if (!base) return false;
+  try {
+    let auth: Record<string, string> = {};
+    try {
+      const tok = await fetch(
+        `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(base)}`,
+        { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(3000) }
+      );
+      if (tok.ok) auth = { Authorization: `Bearer ${await tok.text()}` };
+    } catch {
+      /* local: no metadata server */
+    }
+    // The service answers when the job is done (or at once with 429 if busy): wait only long
+    // enough to see a refusal, then leave the request running.
+    const req = fetch(`${base}/matte`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ id }),
+      signal: AbortSignal.timeout(900_000),
+    });
+    req.catch(() => {});
+    const early = await Promise.race([req, new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+    if (!early || early.ok) {
+      console.log(`[worker] matte ${id} sent to warm service`);
+      return true;
+    }
+    console.warn(`[worker] matte service HTTP ${early.status} for ${id}`);
+  } catch (e: any) {
+    console.warn(`[worker] matte service unreachable for ${id}:`, e?.message || e);
+  }
+  return false;
+}
+
 /** Start background work (Cloud Run Job in production, in-process locally). */
 export async function enqueueWorker(kind: WorkerKind, id?: string): Promise<void> {
+  if (kind === 'matte' && id && (await sendToMatteService(id))) return;
   if (shouldTryCloudRunJob()) {
     const started = await enqueueCloudRunJob(kind, id);
     if (started) return;

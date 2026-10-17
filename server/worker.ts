@@ -41,6 +41,12 @@ async function main() {
     return;
   }
 
+  if (kind === 'serve') {
+    const { serveMatte } = await import('./matting/service');
+    await serveMatte();
+    return;
+  }
+
   if (kind === 'matte') {
     if (!id) throw new Error('matte worker requires --id');
     const { executeMatteJob } = await import('./jobs/matte');

@@ -8,7 +8,7 @@ REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-takeone-matte}"
 IMAGE_URI="${IMAGE_URI:-${REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/takeone-worker:latest}"
 GCS_BUCKET="${GCS_BUCKET:-takeone-media-vault-${PROJECT_ID}}"
-MIN_INSTANCES="${MIN_INSTANCES:-1}"
+MIN_INSTANCES="${MIN_INSTANCES:-0}"
 
 gcloud run deploy "${SERVICE}" \
   --project="${PROJECT_ID}" --region="${REGION}" --image="${IMAGE_URI}" \

@@ -7,7 +7,12 @@ import { useEffect, useRef } from 'react';
 import type { Project, Scene } from '../types/director';
 import { applyAssetResults, dataUrlToBlob, generateAssets } from './aiVisuals';
 import { extensionForMime, uploadBlobToGcs } from './renderClient';
-import { matteIsCurrent, resolveSceneBackgroundPrompt, sceneBackgroundForMatte } from './virtualBackground';
+import {
+  matteIsCurrent,
+  resolveSceneBackgroundPrompt,
+  sceneBackgroundForMatte,
+  spreadVirtualBackground,
+} from './virtualBackground';
 
 type Update = (next: (prev: Project) => Project) => void;
 
@@ -44,6 +49,20 @@ export function useAutoMatte(project: Project | null, onUpdateProject: Update): 
   const projectRef = useRef(project);
   projectRef.current = project;
   const starting = useRef(new Set<string>());
+
+  // One background for the whole video: shots that are missing it (older plans set it on one
+  // shot only) get the same background, and the jobs below then add it to their takes.
+  useEffect(() => {
+    if (!project) return;
+    const opts = (p: Project) => ({
+      lookChosen: Boolean(p.prefs?.looks?.includes('virtual_background')),
+      fallbackPrompt: `A clean, cinematic background plate (no people, no text) that suits: ${p.title}`,
+    });
+    if (spreadVirtualBackground(project.scenes, opts(project)) !== project.scenes) {
+      onUpdateProject((prev) => ({ ...prev, scenes: spreadVirtualBackground(prev.scenes, opts(prev)) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.scenes, project?.prefs?.looks]);
 
   // Start jobs for takes that need one.
   useEffect(() => {

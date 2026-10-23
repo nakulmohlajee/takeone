@@ -180,7 +180,7 @@ function looksLine(prefs?: ProductionPrefs | null): string {
   }
   if (looks.includes('virtual_background')) {
     parts.push(
-      'VIRTUAL BACKGROUND: at least one scene MUST set recipe.layout = "virtual_background" with recipe.background.prompt describing a vivid, on-topic background plate (the creator is keyed over it).'
+      'VIRTUAL BACKGROUND: EVERY creator take MUST set recipe.layout = "virtual_background" with the SAME recipe.background.prompt — one vivid, on-topic background plate for the whole video (the creator is keyed over it), so every shot looks like the same place.'
     );
   }
   if (looks.includes('broll')) {
@@ -284,7 +284,7 @@ MEDIA PLAN (default): mediaPlan.kind = "none" on nearly every beat. The look com
 
   if (wantGreenscreen) {
     lines.push(
-      'Creator wants a VIRTUAL BACKGROUND / greenscreen: at least one scene MUST have recipe.layout = "virtual_background" with recipe.background.prompt describing the background plate (a scene with mediaPlan.kind = "greenscreen" also satisfies this).'
+      'Creator wants a VIRTUAL BACKGROUND / greenscreen: EVERY creator take MUST have recipe.layout = "virtual_background" with the same recipe.background.prompt describing one background plate for the whole video.'
     );
   }
   if (preferOverlays || (ideaWantsMedia && !wantGreenscreen && !wantCutaways)) {

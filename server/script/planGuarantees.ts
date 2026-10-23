@@ -7,6 +7,7 @@
  * reporting "didn't land", these helpers restore the lines and place the missing looks on
  * phrases the creator actually says.
  */
+import { spreadVirtualBackground } from '../../src/utils/virtualBackground';
 import type { ProductionPrefs } from '../../src/types/director';
 
 const STOPWORDS = new Set(
@@ -211,6 +212,15 @@ export function fillMissingLooks<T extends { scenes?: any[]; estimatedTotalSecon
     scenes: scenes.map(({ _scriptNotes, ...rest }) => rest),
   });
   if (!looks.size || !takes.length) return strip();
+
+  // Virtual background is one look for the whole video: every creator take gets it.
+  if (looks.has('virtual_background')) {
+    const spread = spreadVirtualBackground(scenes, {
+      lookChosen: true,
+      fallbackPrompt: `A clean, cinematic background plate (no people, no text) that suits: ${String(idea).slice(0, 160)}`,
+    });
+    if (spread !== scenes) scenes.splice(0, scenes.length, ...spread);
+  }
 
   const all = scenes.flatMap((s) => (Array.isArray(s?.recipe?.inserts) ? s.recipe.inserts : []));
   const hasPrompt = (i: any) => Boolean(String(i?.prompt || '').trim());

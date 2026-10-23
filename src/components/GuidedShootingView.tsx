@@ -127,6 +127,11 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
 }) => {
   const userScenes = project.scenes.filter((s) => s.filmedBy === 'user');
   const [currentUserSceneIndex, setCurrentUserSceneIndex] = useState(() => {
+    // "Shoot this shot" from Shot Direction wins.
+    const picked = project.shootFromSceneId
+      ? userScenes.findIndex((s) => s.id === project.shootFromSceneId)
+      : -1;
+    if (picked >= 0) return picked;
     // Prefer first incomplete take so remount/tab switch never restarts at scene 1
     // when later scenes are already saved.
     const needsCapture = (s: (typeof userScenes)[number]) =>
@@ -153,13 +158,21 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
   const virtualBgUrl =
     (sceneBgUrl?.startsWith('gs://') ? mediaUrlFromGcs(sceneBgUrl) : sceneBgUrl) || PLACEHOLDER_BACKGROUND_URL;
   const isOptionalInsert = Boolean(currentScene?.optionalInsert);
-  const isSingleTake = captureStrategy === 'single_take' && !isOptionalInsert;
+  // A single-take plan reads the whole story from the beats; once the plan has several shots,
+  // each shot must prompt only its own lines.
+  const mainShotCount = userScenes.filter((s) => !s.optionalInsert).length;
+  const isSingleTake = captureStrategy === 'single_take' && !isOptionalInsert && mainShotCount <= 1;
   const narrativeBeats = project.narrativeBeats || [];
   const remainingOptional = userScenes
     .slice(currentUserSceneIndex + 1)
     .some((s) => s.optionalInsert);
 
   const [shootingState, setShootingState] = useState<ShootingState>('ready');
+  // "Shoot this shot" is a one-time request: clear it once the shoot has opened on that shot.
+  useEffect(() => {
+    if (project.shootFromSceneId) onUpdateProject((prev) => ({ ...prev, shootFromSceneId: undefined }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [countdownNum, setCountdownNum] = useState(3);
   const [recordingPaused, setRecordingPaused] = useState(false);
   const recordingPausedRef = useRef(false);
@@ -1306,6 +1319,12 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
 
   // Start recording — keep the single speech recognizer alive for Cut commands
   const startRecording = () => {
+    // Nothing else may play while recording (a reviewed take, a preview, music).
+    stopReviewPlayback();
+    document.querySelectorAll('video, audio').forEach((el) => {
+      const m = el as HTMLMediaElement;
+      if (m !== videoRef.current && !m.paused) m.pause();
+    });
     takeEpochRef.current += 1;
     liveSttRef.current?.beginTake();
     stopSpeechRecognition();
@@ -1944,7 +1963,56 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shootingState, recordedBlob, currentScene?.id]);
 
+  /** Stop the take that was being reviewed so it can never play over the next recording. */
+  const stopReviewPlayback = () => {
+    const v = reviewVideoRef.current;
+    if (v) {
+      try {
+        v.pause();
+        v.muted = true;
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        /* element already gone */
+      }
+    }
+    setReviewPlaying(false);
+  };
+
+  /** Move to any shot (next, previous, or picked from the shot strip) with a clean slate. */
+  const goToShot = (index: number) => {
+    if (index < 0 || index >= totalUserScenes) return;
+    if (shootingStateRef.current === 'recording' || shootingStateRef.current === 'countdown') return;
+    stopReviewPlayback();
+    savedTakeRef.current = null;
+    setTakeSaveStatus('idle');
+    setTakeSaveError(null);
+    setCurrentUserSceneIndex(index);
+    setShootingState('ready');
+    setRecordedVideoUrl(null);
+    setRecordedBlob(null);
+    setRecordingSeconds(0);
+    recordingSecondsRef.current = 0;
+    recordingStartedAtRef.current = 0;
+    setNoAudioWarning(false);
+    setHudDismissed(false);
+    // The teleprompter starts at the top of the new shot's lines, with nothing heard yet.
+    setPrompterLineIdx(0);
+    setLineDwellAt(Date.now());
+    wordCursorRef.current = 0;
+    setWordCursor(0);
+    finalsTextRef.current = [];
+    interimTextRef.current = '';
+    setLiveSpokenText('');
+    transcriptSegmentsRef.current = [];
+    resetLiveDirector({ restartSpeech: false });
+    window.setTimeout(() => {
+      if (handsFreeModeRef.current) startSpeechRecognition(true);
+    }, 400);
+  };
+
   const handleRedoShot = () => {
+    stopReviewPlayback();
     takePersistGenRef.current += 1;
     takeEpochRef.current += 1;
     liveSttRef.current?.beginTake();
@@ -2020,27 +2088,19 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
       { gcsObjectPath: gcsPath, mimeType: mime }
     );
 
-    if (currentUserSceneIndex < totalUserScenes - 1) {
-      takePersistGenRef.current += 1;
-      savedTakeRef.current = null;
-      setTakeSaveStatus('idle');
-      setTakeSaveError(null);
-      setCurrentUserSceneIndex((prev) => prev + 1);
-      setShootingState('ready');
-      setRecordedVideoUrl(null);
-      setRecordedBlob(null);
-      setRecordingSeconds(0);
-      recordingSecondsRef.current = 0;
-      recordingStartedAtRef.current = 0;
-      setNoAudioWarning(false);
-      setHudDismissed(false);
-      setPrompterLineIdx(0);
-      setLineDwellAt(Date.now());
-      resetLiveDirector({ restartSpeech: false });
-      window.setTimeout(() => {
-        if (handsFreeModeRef.current) startSpeechRecognition(true);
-      }, 400);
+    takePersistGenRef.current += 1;
+    // Next shot still to film (shots can be filmed in any order); otherwise we're done.
+    const nextOpen = userScenes.findIndex(
+      (s, i) => i !== currentUserSceneIndex && !sceneHasTake(s) && s.captureStatus !== 'upload' && s.captureStatus !== 'skipped'
+    );
+    const nextIndex =
+      currentUserSceneIndex < totalUserScenes - 1 && !sceneHasTake(userScenes[currentUserSceneIndex + 1])
+        ? currentUserSceneIndex + 1
+        : nextOpen;
+    if (nextIndex >= 0) {
+      goToShot(nextIndex);
     } else {
+      stopReviewPlayback();
       onFinishShooting();
     }
   };
@@ -2071,13 +2131,9 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
       ),
     }));
     if (currentUserSceneIndex < totalUserScenes - 1) {
-      setCurrentUserSceneIndex((prev) => prev + 1);
-      setShootingState('ready');
-      setRecordedVideoUrl(null);
-      setRecordedBlob(null);
-      savedTakeRef.current = null;
-      setTakeSaveStatus('idle');
+      goToShot(currentUserSceneIndex + 1);
     } else {
+      stopReviewPlayback();
       onFinishShooting();
     }
   };
@@ -2137,6 +2193,8 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
     else v.onloadeddata = tryPlay;
     return () => {
       v.onloadeddata = null;
+      // Leaving review (or swapping the clip): never let this element keep playing.
+      v.pause();
     };
   }, [shootingState, recordedVideoUrl]);
 
@@ -2273,6 +2331,45 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
                 : `Scene #${currentScene?.sceneNumber}`}
           </span>
         </div>
+        {!isSingleTake && totalUserScenes > 1 ? (
+          <nav aria-label="Shots" className="flex items-center gap-1 flex-wrap">
+            {userScenes.map((sc, i) => {
+              const done = sceneHasTake(sc);
+              const active = i === currentUserSceneIndex;
+              const locked =
+                shootingState === 'recording' ||
+                shootingState === 'countdown' ||
+                (shootingState === 'reviewing' && takeSaveStatus === 'saving');
+              return (
+                <button
+                  key={sc.id}
+                  type="button"
+                  disabled={locked || active}
+                  onClick={() => goToShot(i)}
+                  aria-current={active ? 'step' : undefined}
+                  aria-label={`Shot ${i + 1}: ${sc.title}${done ? ' (filmed)' : ''}`}
+                  title={
+                    locked && !active
+                      ? shootingState === 'reviewing'
+                        ? 'Saving this take…'
+                        : 'Finish recording first'
+                      : `${sc.title}${done ? ' · filmed — tap to retake' : ''}`
+                  }
+                  className={`h-7 min-w-7 px-2 rounded-full text-xs font-bold tabular-nums inline-flex items-center justify-center gap-1 transition-colors ${
+                    active
+                      ? 'bg-[#1A73E8] text-white'
+                      : done
+                        ? 'bg-[#E6F4EA] text-[#137333] hover:bg-[#CEEAD6]'
+                        : 'bg-white text-[#3C4043] border border-[#DADCE0] hover:bg-[#F1F3F4]'
+                  } ${locked && !active ? 'opacity-50 cursor-not-allowed' : active ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  {done && !active ? <Check className="w-3 h-3" /> : null}
+                  {i + 1}
+                </button>
+              );
+            })}
+          </nav>
+        ) : (
         <div className="flex items-center gap-1.5 flex-1 max-w-[160px]">
           {(isSingleTake && narrativeBeats.length ? narrativeBeats : isSingleTake ? narrativeBeats : userScenes).map((item, i) => {
             const currentBeatId =
@@ -2299,6 +2396,7 @@ export const GuidedShootingView: React.FC<GuidedShootingViewProps> = ({
             );
           })}
         </div>
+        )}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             type="button"

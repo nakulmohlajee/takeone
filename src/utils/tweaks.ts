@@ -219,14 +219,14 @@ export function applyTweakOps(project: Project, prefs: ProductionPrefs, ops: Twe
         editScene(op.sceneId, (s) => {
           if (s.filmedBy !== 'user') return s;
           const recipe = s.recipe || { layout: 'talking_head' as const, inserts: [], punchIns: [], transitionOut: 'cut' as const };
-          if (op.on === false) return { ...s, recipe: { ...recipe, layout: 'talking_head' } };
+          if (op.on === false) return { ...s, virtualBackgroundOff: true, recipe: { ...recipe, layout: 'talking_head' } };
           const prompt = op.prompt?.trim() || recipe.background?.prompt || '';
           const changed = prompt !== (recipe.background?.prompt || '').trim();
           const background = changed ? { prompt } : recipe.background || { prompt };
           if (prompt && (changed || !background.assetUrl)) {
             newVisualKeys.push({ key: `${s.id}:bg`, sceneId: s.id, prompt });
           }
-          return { ...s, recipe: { ...recipe, layout: 'virtual_background', background } };
+          return { ...s, virtualBackgroundOff: undefined, recipe: { ...recipe, layout: 'virtual_background', background } };
         });
         break;
       case 'set_punch_in':

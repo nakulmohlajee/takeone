@@ -352,6 +352,8 @@ export interface Scene {
    * Server-side matting (RVM): the take with the person cut out and placed on the background.
    * Valid only while it was made from the current take and the current background.
    */
+  /** Creator switched the virtual background off for this shot (it isn't spread to it). */
+  virtualBackgroundOff?: boolean;
   matteStatus?: 'running' | 'ready' | 'failed';
   matteJobId?: string;
   matteProgress?: number;
@@ -522,6 +524,8 @@ export interface Project {
   capturePlan?: CaptureUnit[];
   /** Last capture unit the creator was filming — resume here after leaving Shoot */
   lastShootingSceneId?: string;
+  /** Shot Direction asked to start the shoot on this scene (consumed when the shoot opens). */
+  shootFromSceneId?: string;
   /** shoot = ProductionPlan path; import = external camera footage */
   entryPath?: 'shoot' | 'import';
   /** Cloud Run FFmpeg master MP4 (inline playable) */

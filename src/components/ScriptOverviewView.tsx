@@ -891,6 +891,21 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                   </button>
+                  {isUser && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Film this shot now, in any order; the shoot opens on it.
+                        onUpdateProject((prev) => ({ ...prev, shootFromSceneId: scene.id }));
+                        onStartShooting();
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-[#1A73E8] text-white hover:bg-[#1557B0] transition cursor-pointer"
+                      title={scene.gcsObjectPath || scene.userRecordedVideoUrl ? 'Retake this shot' : 'Film this shot now'}
+                    >
+                      <Camera className="w-3 h-3" />
+                      {scene.gcsObjectPath || scene.userRecordedVideoUrl ? 'Retake' : 'Shoot this'}
+                    </button>
+                  )}
                   <button
                     onClick={() => setEditingId(isEditing ? null : scene.id)}
                     className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${

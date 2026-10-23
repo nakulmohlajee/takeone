@@ -81,3 +81,49 @@ export function matteIsCurrent(scene: Scene | undefined, project?: Project): boo
   const bg = sceneBackgroundForMatte(scene, project);
   return Boolean(bg && bg === scene.mattedBackgroundUrl);
 }
+
+type SpreadScene = {
+  filmedBy?: string;
+  mediaRole?: string;
+  virtualBackgroundOff?: boolean;
+  recipe?: { layout?: string; background?: { prompt?: string; assetUrl?: string }; [k: string]: any } | null;
+  [k: string]: any;
+};
+
+/**
+ * One virtual background for the whole video: when any shot uses it (or the creator picked the
+ * look), every shot the creator films gets it too, sharing the same background so the cut looks
+ * like one place. Shots the creator explicitly switched off are left alone. Returns the same
+ * array when nothing changes.
+ */
+export function spreadVirtualBackground<T extends SpreadScene>(
+  scenes: T[],
+  opts: { lookChosen?: boolean; fallbackPrompt?: string } = {}
+): T[] {
+  const takes = scenes.filter((s) => s.filmedBy === 'user' && s.mediaRole !== 'overlay');
+  if (!takes.length) return scenes;
+  const source = takes.find((s) => s.recipe?.layout === 'virtual_background' && s.recipe?.background?.prompt);
+  if (!source && !opts.lookChosen) return scenes;
+  const background = source?.recipe?.background || (opts.fallbackPrompt ? { prompt: opts.fallbackPrompt } : null);
+  if (!background) return scenes;
+  let changed = false;
+  const next = scenes.map((s) => {
+    if (s.filmedBy !== 'user' || s.mediaRole === 'overlay' || s.virtualBackgroundOff) return s;
+    const r = s.recipe;
+    if (r?.layout === 'virtual_background' && r.background?.prompt) return s;
+    if (r?.layout && r.layout !== 'talking_head' && r.layout !== 'virtual_background') return s; // pip / split stay
+    changed = true;
+    return {
+      ...s,
+      recipe: {
+        inserts: [],
+        punchIns: [],
+        transitionOut: 'cut',
+        ...(r || {}),
+        layout: 'virtual_background',
+        background: { ...background },
+      },
+    };
+  });
+  return changed ? next : scenes;
+}

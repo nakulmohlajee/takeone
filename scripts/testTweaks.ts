@@ -118,7 +118,7 @@ const base = {
   assert.equal(rc.layout, 'virtual_background');
   assert.equal(rc.background!.prompt, 'a beach at sunset');
   assert.equal(rc.background!.assetUrl, undefined);
-  assert.deepEqual(r.newVisualKeys.map((k) => k.key), ['s1:bg']);
+  assert.deepEqual(r.newVisualKeys.map((k) => k.key), ['video:bg']);
   const off = applyTweakOps(r.project, prefs, [{ op: 'set_background', sceneId: 's1', on: false }]);
   assert.equal(off.project.scenes[0].recipe!.layout, 'talking_head');
   assert.equal(off.newVisualKeys.length, 0);

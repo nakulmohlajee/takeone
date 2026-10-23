@@ -5,6 +5,9 @@
  */
 import type { Project, ProductionPrefs, Scene } from '../types/director';
 import { addAiVisual, lookForKind, type NewVisualKind } from './aiVisuals';
+import { VIDEO_BG_KEY, setVideoBackground, videoBackground } from './virtualBackground';
+
+const EMPTY_RECIPE = { layout: 'talking_head' as const, inserts: [], punchIns: [], transitionOut: 'cut' as const };
 
 export type KeepRange = { start: number; end: number };
 
@@ -215,20 +218,39 @@ export function applyTweakOps(project: Project, prefs: ProductionPrefs, ops: Twe
           };
         });
         break;
-      case 'set_background':
-        editScene(op.sceneId, (s) => {
-          if (s.filmedBy !== 'user') return s;
-          const recipe = s.recipe || { layout: 'talking_head' as const, inserts: [], punchIns: [], transitionOut: 'cut' as const };
-          if (op.on === false) return { ...s, virtualBackgroundOff: true, recipe: { ...recipe, layout: 'talking_head' } };
-          const prompt = op.prompt?.trim() || recipe.background?.prompt || '';
-          const changed = prompt !== (recipe.background?.prompt || '').trim();
-          const background = changed ? { prompt } : recipe.background || { prompt };
-          if (prompt && (changed || !background.assetUrl)) {
-            newVisualKeys.push({ key: `${s.id}:bg`, sceneId: s.id, prompt });
-          }
-          return { ...s, virtualBackgroundOff: undefined, recipe: { ...recipe, layout: 'virtual_background', background } };
-        });
+      case 'set_background': {
+        if (op.on === false) {
+          editScene(op.sceneId, (s) =>
+            s.filmedBy !== 'user'
+              ? s
+              : { ...s, virtualBackgroundOff: true, recipe: { ...(s.recipe || EMPTY_RECIPE), layout: 'talking_head' } }
+          );
+          break;
+        }
+        // The video has ONE background: switching it on uses it; a new description replaces it
+        // for every shot (and is made once).
+        const current = videoBackground(next.scenes);
+        editScene(op.sceneId, (s) =>
+          s.filmedBy !== 'user'
+            ? s
+            : {
+                ...s,
+                virtualBackgroundOff: undefined,
+                recipe: {
+                  ...(s.recipe || EMPTY_RECIPE),
+                  layout: 'virtual_background',
+                  background: current ? { ...current } : { prompt: op.prompt?.trim() || '' },
+                },
+              }
+        );
+        const prompt = op.prompt?.trim();
+        if (prompt && prompt !== (current?.prompt || '').trim()) {
+          next = setVideoBackground(next, { prompt, assetUrl: undefined });
+        }
+        const bg = videoBackground(next.scenes);
+        if (bg?.prompt && !bg.assetUrl) newVisualKeys.push({ key: VIDEO_BG_KEY, sceneId: op.sceneId, prompt: bg.prompt });
         break;
+      }
       case 'set_punch_in':
         editScene(op.sceneId, (s) => {
           const p = s.recipe?.punchIns[op.index];

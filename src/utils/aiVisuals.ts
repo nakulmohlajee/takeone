@@ -3,6 +3,7 @@
  * finding what still needs an image, generating / uploading images, and writing them back.
  * Shared by the Master Cut export (auto-fill) and the AI visuals editor.
  */
+import { VIDEO_BG_KEY, setVideoBackground, videoBackground } from './virtualBackground';
 import type { Project, ProductionPrefs, Scene } from '../types/director';
 import { extensionForMime, uploadBlobToGcs } from './renderClient';
 
@@ -55,20 +56,16 @@ export function findMissingAssets(project: Project, prefs: ProductionPrefs): Mis
           insertIndex: idx,
         });
       });
+      // The whole video shares one background: queue it once.
       if (
         recipe.layout === 'virtual_background' &&
-        !recipe.background?.assetUrl &&
-        !scene.virtualBackgroundBaked
+        !scene.virtualBackgroundBaked &&
+        !out.some((m) => m.key === VIDEO_BG_KEY)
       ) {
-        const prompt = String(recipe.background?.prompt || '').trim();
-        if (prompt) {
-          out.push({
-            key: `${scene.id}:bg`,
-            sceneId: scene.id,
-            sceneTitle: scene.title,
-            prompt,
-            kind: 'background',
-          });
+        const bg = videoBackground(project.scenes);
+        const prompt = String(bg?.prompt || '').trim();
+        if (prompt && !bg?.assetUrl) {
+          out.push({ key: VIDEO_BG_KEY, sceneId: scene.id, sceneTitle: 'Virtual background', prompt, kind: 'background' });
         }
       }
     }
@@ -143,6 +140,8 @@ export async function generateAssets(
 /** Write generated asset URIs back into the project (recipe inserts, backgrounds, AI scenes). */
 export function applyAssetResults(project: Project, results: Map<string, string>): Project {
   if (!results.size) return project;
+  const videoBg = results.get(VIDEO_BG_KEY);
+  if (videoBg) project = setVideoBackground(project, { assetUrl: videoBg });
   return {
     ...project,
     scenes: project.scenes.map((scene) => {
@@ -209,15 +208,16 @@ export function listAiVisuals(project: Project, prefs: ProductionPrefs): AiVisua
   const out: AiVisual[] = [];
   for (const scene of project.scenes) {
     const recipe = scene.recipe;
-    if (recipe?.layout === 'virtual_background' && !scene.virtualBackgroundBaked) {
+    if (recipe?.layout === 'virtual_background' && !scene.virtualBackgroundBaked && !out.some((v) => v.key === VIDEO_BG_KEY)) {
+      const bg = videoBackground(project.scenes);
       out.push({
-        key: `${scene.id}:bg`,
+        key: VIDEO_BG_KEY,
         sceneId: scene.id,
-        sceneTitle: scene.title,
+        sceneTitle: 'Every shot',
         kind: 'background',
         label: 'Virtual background',
-        prompt: recipe.background?.prompt || '',
-        assetUrl: recipe.background?.assetUrl,
+        prompt: bg?.prompt || '',
+        assetUrl: bg?.assetUrl,
         enabled: true,
         inCut: true,
       });
@@ -264,6 +264,12 @@ export function updateAiVisual(
   key: string,
   patch: { prompt?: string; enabled?: boolean; clearAsset?: boolean }
 ): Project {
+  if (key === VIDEO_BG_KEY) {
+    return setVideoBackground(project, {
+      ...(patch.prompt !== undefined ? { prompt: patch.prompt } : {}),
+      ...(patch.clearAsset ? { assetUrl: undefined } : {}),
+    });
+  }
   const [sceneId, type, idxRaw] = key.split(':');
   return {
     ...project,

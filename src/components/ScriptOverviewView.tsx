@@ -25,7 +25,7 @@ import {
 import { Project, Scene, formatDuration } from '../types/director';
 import { TakeTrimEditor } from './TakeTrimEditor';
 import { VirtualBackgroundPicker } from './VirtualBackgroundPicker';
-import { sceneWantsVirtualBackground } from '../utils/virtualBackground';
+import { VIDEO_BG_KEY, sceneWantsVirtualBackground, setVideoBackground, videoBackground } from '../utils/virtualBackground';
 import { applyAssetResults, generateAssets, updateAiVisual, type MissingAsset } from '../utils/aiVisuals';
 import { ShotTakeAnalysis } from './ShotTakeAnalysis';
 import {
@@ -100,8 +100,7 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
     if (recipe.layout === 'virtual_background') {
       items.push({
         key: `${scene.id}-bg`,
-        kind: 'Virtual BG',
-        detail: recipe.background?.prompt,
+        kind: 'Virtual background',
       });
     }
     (recipe.inserts || []).forEach((ins, i) => {
@@ -382,16 +381,15 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
       if (rc.virtualBackground === false && recipe.layout === 'virtual_background') {
         recipe = { ...recipe, layout: 'talking_head' };
       }
+      // The video has ONE background shared by every shot: a new description replaces it everywhere.
+      let newVideoBgPrompt: string | null = null;
       if (rc.virtualBackground === true || rc.backgroundPrompt) {
-        const bgPrompt = rc.backgroundPrompt || recipe.background?.prompt || '';
-        const changed = bgPrompt.trim() !== (base.background?.prompt || '').trim();
-        recipe = {
-          ...recipe,
-          layout: 'virtual_background',
-          background: changed ? { prompt: bgPrompt } : recipe.background || { prompt: bgPrompt },
-        };
-        if (bgPrompt && (changed || !recipe.background?.assetUrl)) {
-          toGenerate.push({ key: `${scene.id}:bg`, sceneId: scene.id, sceneTitle: scene.title, prompt: bgPrompt, kind: 'background' });
+        const current = videoBackground(project.scenes);
+        const bgPrompt = String(rc.backgroundPrompt || current?.prompt || '').trim();
+        recipe = { ...recipe, layout: 'virtual_background', background: current ? { ...current } : { prompt: bgPrompt } };
+        if (bgPrompt && bgPrompt !== (current?.prompt || '').trim()) newVideoBgPrompt = bgPrompt;
+        if (bgPrompt && (newVideoBgPrompt || !current?.assetUrl)) {
+          toGenerate.push({ key: VIDEO_BG_KEY, sceneId: scene.id, sceneTitle: 'Virtual background', prompt: bgPrompt, kind: 'background' });
         }
       }
       for (const v of (rc.visuals || []) as Array<{ index: number; prompt?: string; text?: string }>) {
@@ -421,6 +419,10 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
         return;
       }
       updateScene(scene.id, patch);
+      if (newVideoBgPrompt) {
+        const prompt = newVideoBgPrompt;
+        onUpdateProject((prev) => setVideoBackground(prev, { prompt, assetUrl: undefined }));
+      }
       setRevisePrompt((prev) => ({ ...prev, [scene.id]: '' }));
       const summary = String(data.summary || '').trim() || 'Scene updated.';
       setReviseNote((prev) => ({
@@ -779,6 +781,13 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
             {regenBusy ? 'Regenerating…' : 'Regenerate with my selections'}
           </button>
           {regenError ? <p className="text-xs text-[#C5221F]">{regenError}</p> : null}
+        </div>
+      )}
+
+      {(project.prefs?.looks?.includes('virtual_background') ||
+        userScenes.some((s) => sceneWantsVirtualBackground(s, project))) && (
+        <div className="mb-4">
+          <VirtualBackgroundPicker project={project} onUpdateProject={onUpdateProject} />
         </div>
       )}
 
@@ -1189,14 +1198,6 @@ export const ScriptOverviewView: React.FC<ScriptOverviewViewProps> = ({
                       </p>
                     )}
                   </div>
-                )}
-
-                {sceneWantsVirtualBackground(scene, project) && (
-                  <VirtualBackgroundPicker
-                    scene={scene}
-                    project={project}
-                    onChange={(patch) => updateScene(scene.id, patch)}
-                  />
                 )}
 
                 {(isEditing || (scene.directorTip || '').trim()) && (

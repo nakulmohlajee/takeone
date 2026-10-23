@@ -7,6 +7,8 @@ import { applyAssetResults, generateAssets } from '../utils/aiVisuals';
 import { extensionForMime, kickProxyBuild, uploadBlobToGcs } from '../utils/renderClient';
 import { mediaUrlFromGcs, resolvePlayableTakeUrl, saveTakeMedia } from '../utils/mediaVault';
 import {
+  VIDEO_BG_KEY,
+  videoBackground,
   matteIsCurrent,
   resolveSceneBackgroundPrompt,
   resolveSceneBackgroundUrl,
@@ -80,12 +82,12 @@ export const ApplyBackgroundCard: React.FC<{
       if (!scene) throw new Error('Take not found');
       let bgUrl = resolveSceneBackgroundUrl(scene, projectRef.current);
       if (!bgUrl) {
-        const prompt = resolveSceneBackgroundPrompt(scene, projectRef.current);
+        const prompt = videoBackground(projectRef.current.scenes)?.prompt || resolveSceneBackgroundPrompt(scene, projectRef.current);
         if (!prompt) throw new Error('Describe a background first (Shot Direction or the tweak box).');
         setJob(sceneId, { stage: 'Making the background…' });
-        const key = `${scene.id}:bg`;
+        const key = VIDEO_BG_KEY;
         const { results } = await generateAssets(
-          [{ key, sceneId: scene.id, sceneTitle: scene.title, prompt, kind: 'background' }],
+          [{ key, sceneId: scene.id, sceneTitle: 'Virtual background', prompt, kind: 'background' }],
           { aspectRatio, styleBible: projectRef.current.channelSettings?.styleBible || '' }
         );
         bgUrl = results.get(key);

@@ -82,6 +82,9 @@ export function matteIsCurrent(scene: Scene | undefined, project?: Project): boo
   return Boolean(bg && bg === scene.mattedBackgroundUrl);
 }
 
+/** Generation / editor key for the one background the whole video shares. */
+export const VIDEO_BG_KEY = 'video:bg';
+
 type SpreadScene = {
   filmedBy?: string;
   mediaRole?: string;
@@ -90,28 +93,63 @@ type SpreadScene = {
   [k: string]: any;
 };
 
+type Bg = { prompt: string; assetUrl?: string };
+
+const isTake = (s: SpreadScene) => s.filmedBy === 'user' && s.mediaRole !== 'overlay';
+const usesVb = (s: SpreadScene) => isTake(s) && s.recipe?.layout === 'virtual_background';
+
 /**
- * One virtual background for the whole video: when any shot uses it (or the creator picked the
- * look), every shot the creator films gets it too, sharing the same background so the cut looks
- * like one place. Shots the creator explicitly switched off are left alone. Returns the same
- * array when nothing changes.
+ * The video's single virtual background: the first shot's background that has a picture,
+ * otherwise the first one with a description.
+ */
+export function videoBackground(scenes: SpreadScene[]): Bg | undefined {
+  const vb = scenes.filter(usesVb);
+  const withPicture = vb.find((s) => s.recipe?.background?.assetUrl);
+  const withPrompt = vb.find((s) => String(s.recipe?.background?.prompt || '').trim());
+  const pick = withPicture || withPrompt;
+  if (!pick?.recipe?.background) return undefined;
+  return { prompt: String(pick.recipe.background.prompt || ''), assetUrl: pick.recipe.background.assetUrl };
+}
+
+/** Set the one background (description and/or picture) on every shot that uses it. */
+export function setVideoBackground<T extends { scenes: SpreadScene[] }>(project: T, bg: Partial<Bg>): T {
+  const current = videoBackground(project.scenes) || { prompt: '' };
+  const next: Bg = {
+    prompt: bg.prompt !== undefined ? bg.prompt : current.prompt,
+    assetUrl: 'assetUrl' in bg ? bg.assetUrl : current.assetUrl,
+  };
+  if (!next.assetUrl) delete next.assetUrl;
+  return {
+    ...project,
+    scenes: project.scenes.map((s) =>
+      usesVb(s) ? { ...s, recipe: { ...s.recipe, background: { ...next } } } : s
+    ),
+  };
+}
+
+/**
+ * One virtual background for the whole video. When any shot uses it (or the creator picked the
+ * look), every shot the creator films uses it, and all of them share exactly the same background
+ * (same description, same picture), so there is only ever one picture to make. Shots the creator
+ * switched off are left alone. Returns the same array when nothing changes.
  */
 export function spreadVirtualBackground<T extends SpreadScene>(
   scenes: T[],
   opts: { lookChosen?: boolean; fallbackPrompt?: string } = {}
 ): T[] {
-  const takes = scenes.filter((s) => s.filmedBy === 'user' && s.mediaRole !== 'overlay');
-  if (!takes.length) return scenes;
-  const source = takes.find((s) => s.recipe?.layout === 'virtual_background' && s.recipe?.background?.prompt);
-  if (!source && !opts.lookChosen) return scenes;
-  const background = source?.recipe?.background || (opts.fallbackPrompt ? { prompt: opts.fallbackPrompt } : null);
-  if (!background) return scenes;
+  if (!scenes.some(isTake)) return scenes;
+  const shared = videoBackground(scenes) || (opts.lookChosen && opts.fallbackPrompt ? { prompt: opts.fallbackPrompt } : undefined);
+  if (!shared || (!scenes.some(usesVb) && !opts.lookChosen)) return scenes;
   let changed = false;
   const next = scenes.map((s) => {
-    if (s.filmedBy !== 'user' || s.mediaRole === 'overlay' || s.virtualBackgroundOff) return s;
+    if (!isTake(s) || s.virtualBackgroundOff) return s;
     const r = s.recipe;
-    if (r?.layout === 'virtual_background' && r.background?.prompt) return s;
     if (r?.layout && r.layout !== 'talking_head' && r.layout !== 'virtual_background') return s; // pip / split stay
+    const same =
+      r?.layout === 'virtual_background' &&
+      (r.background?.prompt || '') === shared.prompt &&
+      (r.background?.assetUrl || undefined) === (shared.assetUrl || undefined);
+    if (same) return s;
     changed = true;
     return {
       ...s,
@@ -121,7 +159,7 @@ export function spreadVirtualBackground<T extends SpreadScene>(
         transitionOut: 'cut',
         ...(r || {}),
         layout: 'virtual_background',
-        background: { ...background },
+        background: { ...shared },
       },
     };
   });

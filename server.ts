@@ -1860,6 +1860,7 @@ Prefer fewer inserts. Empty array is OK.`,
  * Virtual background by server-side matting (RVM): start a matte job for one take, then poll it.
  * Runs on the worker job in production (in-process locally).
  */
+const recentMatteJobs = new Map<string, { id: string; at: number }>();
 app.post('/api/matte/start', rateLimitMiddleware('render'), async (req, res) => {
   try {
     const { gcsUri, backgroundUrl, aspectRatio, projectId, sceneId } = req.body || {};
@@ -1869,7 +1870,14 @@ app.post('/api/matte/start', rateLimitMiddleware('render'), async (req, res) => 
     if (typeof backgroundUrl !== 'string' || !/^(gs:|https?:|data:image)/.test(backgroundUrl)) {
       return res.status(400).json({ error: 'backgroundUrl is required' });
     }
-    const { createMatteJob } = await import('./server/jobs/matte');
+    // The same take on the same background is already being done: hand back that job.
+    const dupKey = `${gcsUri}|${backgroundUrl}|${aspectRatio || ''}`;
+    const recent = recentMatteJobs.get(dupKey);
+    const { createMatteJob, readMatteStatus } = await import('./server/jobs/matte');
+    if (recent && Date.now() - recent.at < 15 * 60_000) {
+      const st = await readMatteStatus(recent.id);
+      if (st && st.status !== 'failed') return res.json({ ok: true, jobId: recent.id, reused: true });
+    }
     const { enqueueWorker } = await import('./server/jobs/enqueue');
     const job = await createMatteJob({
       sourceGcsUri: gcsUri,
@@ -1878,6 +1886,7 @@ app.post('/api/matte/start', rateLimitMiddleware('render'), async (req, res) => 
       projectId: String(projectId || 'project').replace(/[^\w-]/g, '').slice(0, 80) || 'project',
       sceneId: String(sceneId || 'scene').replace(/[^\w-]/g, '').slice(0, 80) || 'scene',
     });
+    recentMatteJobs.set(dupKey, { id: job.id, at: Date.now() });
     await enqueueWorker('matte', job.id);
     return res.json({ ok: true, jobId: job.id });
   } catch (err: any) {

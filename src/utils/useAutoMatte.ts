@@ -73,7 +73,9 @@ export function useAutoMatte(project: Project | null, onUpdateProject: Update): 
       if (!wantsMatte(scene, project)) continue;
       const bg = sceneBackgroundForMatte(scene, project);
       if (alreadyHandled(scene, bg)) continue;
-      const key = `${scene.id}|${scene.gcsObjectPath}|${bg || ''}`;
+      // Keyed on the take and the background's description — not its picture URL, which appears
+      // while the first start is still waiting for it and used to start a second, duplicate job.
+      const key = `${scene.id}|${scene.gcsObjectPath}|${videoBackground(project.scenes)?.prompt || ''}`;
       if (starting.current.has(key)) continue;
       starting.current.add(key);
       void startMatte(scene.id).finally(() => starting.current.delete(key));
@@ -118,6 +120,15 @@ export function useAutoMatte(project: Project | null, onUpdateProject: Update): 
     });
     return run;
   };
+
+  // Make the background picture as soon as the plan has one, so no take ever waits for it.
+  const bgDesc = project ? videoBackground(project.scenes) : undefined;
+  const bgNeeded = Boolean(bgDesc?.prompt?.trim() && !bgDesc.assetUrl);
+  useEffect(() => {
+    if (!project || !bgNeeded) return;
+    void ensureVideoBackgroundUrl(project).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgNeeded, bgDesc?.prompt]);
 
   const startMatte = async (sceneId: string) => {
     const p = projectRef.current;

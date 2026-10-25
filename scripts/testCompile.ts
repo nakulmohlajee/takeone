@@ -142,15 +142,31 @@ for (const s of sceneClip.segments!) {
   assert.equal(bakedReport.virtualBackgroundScenes, 1, 'baked take still counts as virtual background');
 }
 
-// A plain-camera take (recorded without the background) gets no plate and a clear warning.
+// A plain-camera take whose background job isn't done: no plate, and the export is told to cut
+// it out itself (matteBackgroundUrl) — Export never waits.
 {
   const rawProject = {
     ...project,
-    scenes: project.scenes.map((sc) => ({ ...sc, virtualBackgroundMode: 'none' as const })),
+    scenes: project.scenes.map((sc) => ({ ...sc, virtualBackgroundMode: 'none' as const, matteStatus: 'running' as const })),
   } as Project;
   const { edl: rawEdl, report: rawReport } = compileDirectorCut({ project: rawProject, prefs });
   assert.ok(!rawEdl.clips[0].brollInserts.some((b) => b.layout === 'greenscreen'), 'raw take got a plate');
-  assert.ok(rawReport.warnings.some((w) => w.includes('virtual background')), 'no missing-background warning');
+  assert.equal(rawEdl.clips[0].matteBackgroundUrl, 'gs://bucket/bg/neon.jpg', 'export not told to add the background');
+  assert.ok(!rawReport.warnings.some((w) => /virtual background/i.test(w)), `unexpected warning: ${rawReport.warnings.join(' | ')}`);
+  // Imported footage (no recording mode) is treated the same way.
+  const imported = {
+    ...project,
+    scenes: project.scenes.map((sc) => ({ ...sc, mediaSource: 'imported' as const })),
+  } as Project;
+  assert.equal(compileDirectorCut({ project: imported, prefs }).edl.clips[0].matteBackgroundUrl, 'gs://bucket/bg/neon.jpg');
+  // No picture yet → a clear warning instead.
+  const noPic = {
+    ...rawProject,
+    scenes: rawProject.scenes.map((sc) => ({ ...sc, recipe: { ...sc.recipe!, background: { prompt: 'neon studio' } } })),
+  } as Project;
+  const np = compileDirectorCut({ project: noPic, prefs });
+  assert.equal(np.edl.clips[0].matteBackgroundUrl, undefined);
+  assert.ok(np.report.warnings.some((w) => w.includes("isn't ready yet")));
 }
 
 // A server-matted take (current take + current background) plays the matted file, with no plate.
@@ -166,6 +182,7 @@ for (const s of sceneClip.segments!) {
   assert.equal(mEdl.clips[0].mediaUrl, matte.mattedGcsPath, 'matted file not used');
   assert.equal(mEdl.clips[0].mimeType, 'video/mp4');
   assert.ok(!mEdl.clips[0].brollInserts.some((b) => b.layout === 'greenscreen'), 'matted take got a plate');
+  assert.equal(mEdl.clips[0].matteBackgroundUrl, undefined, 'already matted, nothing to add');
   // Background changed since → the old matte is not used.
   const changed = {
     ...matted,

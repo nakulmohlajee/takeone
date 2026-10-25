@@ -618,17 +618,20 @@ function compileScene(args: {
   // A plain-camera take has no green to key, so a plate would do nothing.
   // A server-matted take already has the background in it, like a baked one.
   const baked = Boolean(scene.virtualBackgroundBaked) || matteIsCurrent(scene, project);
-  const rawCamera = scene.virtualBackgroundMode === 'none' && !baked;
+  // Plain camera: recorded without the in-browser composite, or imported footage.
+  const rawCamera =
+    !baked &&
+    (scene.virtualBackgroundMode === 'none' || (!scene.virtualBackgroundMode && scene.mediaSource === 'imported'));
   const bgUrl =
     recipe?.layout === 'virtual_background' && !baked && !rawCamera ? recipe.background?.assetUrl : undefined;
-  let virtualBg = baked;
-  if (recipe?.layout === 'virtual_background' && rawCamera) {
-    warnings.push(
-      scene.matteStatus === 'running'
-        ? `"${scene.title}": the virtual background is still being added — export again in a minute to include it.`
-        : `"${scene.title}" doesn't have its virtual background yet — open the Master Cut to add it.`
-    );
-  } else if (recipe?.layout === 'virtual_background' && !bgUrl && !baked) {
+  // Export never waits for the background job: a plain-camera take that isn't matted yet is
+  // matted by the export itself (no green plate needed).
+  const matteBackgroundUrl =
+    recipe?.layout === 'virtual_background' && rawCamera ? recipe.background?.assetUrl : undefined;
+  let virtualBg = baked || Boolean(matteBackgroundUrl);
+  if (recipe?.layout === 'virtual_background' && rawCamera && !matteBackgroundUrl) {
+    warnings.push(`"${scene.title}": the virtual background picture isn't ready yet — generate it, then export again.`);
+  } else if (recipe?.layout === 'virtual_background' && !bgUrl && !baked && !rawCamera) {
     warnings.push(`Virtual background requested for "${scene.title}" but no background asset is ready yet.`);
   }
 
@@ -690,6 +693,7 @@ function compileScene(args: {
 
   const clip: EdlClip = {
     ...template,
+    ...(matteBackgroundUrl ? { matteBackgroundUrl, proxyUrl: undefined } : {}),
     title: scene.title,
     durationSeconds: round3(sceneDur),
     inPoint: pieces[0].start,

@@ -173,8 +173,8 @@ export const ApplyBackgroundCard: React.FC<{
                 {failed
                   ? `— couldn’t add the virtual background (${scene.matteError || 'job failed'}).`
                   : scene.matteStatus === 'running'
-                    ? `— adding your virtual background${pct ? ` · ${pct}%.` : '…'} It shows up here when it’s done.`
-                    : '— getting the virtual background ready…'}
+                    ? `— finishing the virtual background${pct ? ` · ${pct}%` : '…'}. No need to wait: the preview shows it now, and Export adds it if this isn't done.`
+                    : '— getting the virtual background ready. No need to wait: Export adds it if this isn\u2019t done.'}
               </p>
               {failed && (
                 <div className="shrink-0 flex gap-1.5">

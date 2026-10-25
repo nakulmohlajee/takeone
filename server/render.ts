@@ -2428,8 +2428,43 @@ async function executeRender(jobId: string, edl: any) {
           );
         }
         const rawExt = rawExtensionForClip({ ...clip, mediaUrl: mediaSrc });
-        const rawPath = path.join(workDir, `raw-${i}.${rawExt}`);
+        let rawPath = path.join(workDir, `raw-${i}.${rawExt}`);
         await downloadToFile(mediaSrc, rawPath);
+
+        // Virtual background not added yet (its background job hadn't finished when Export was
+        // pressed): cut the person out here and put them on the video's background.
+        const matteBg = (clip as any).matteBackgroundUrl as string | undefined;
+        if (matteBg && clip.mediaKind !== 'image') {
+          job.message = `Adding the virtual background to clip ${i + 1}/${clips.length}`;
+          await persistJob(job);
+          try {
+            const bgPath = path.join(workDir, `matte-bg-${i}.img`);
+            await downloadToFile(matteBg, bgPath);
+            const mattedPath = path.join(workDir, `matted-${i}.mp4`);
+            const { matteVideo } = await import('./matting/rvm');
+            let lastSave = 0;
+            const r = await matteVideo({
+              inputPath: rawPath,
+              backgroundPath: bgPath,
+              outputPath: mattedPath,
+              aspectRatio: edl.aspectRatio,
+              onProgress: (frac) => {
+                job.message = `Adding the virtual background to clip ${i + 1}/${clips.length} · ${Math.round(frac * 100)}%`;
+                if (Date.now() - lastSave >= 3000) {
+                  lastSave = Date.now();
+                  job.updatedAt = lastSave;
+                  void persistJob(job);
+                }
+              },
+            });
+            console.log(`[render] matted clip ${i + 1}: ${r.frames} frames at ${r.fps.toFixed(1)} fps`);
+            rawPath = mattedPath;
+          } catch (matteErr: any) {
+            const msg = `Couldn't add the virtual background to "${clip.title}" (${String(matteErr?.message || matteErr).slice(0, 120)}) — it uses the camera background in this export.`;
+            console.warn(`[render] ${msg}`);
+            job.warnings = [...(job.warnings || []), msg];
+          }
+        }
         const clipDurHint =
           typeof clip.inPoint === 'number' &&
           typeof clip.outPoint === 'number' &&
@@ -2936,13 +2971,19 @@ async function claimRenderJob(job: RenderJob): Promise<boolean> {
   return true;
 }
 
+/** Render requests kept in memory for local runs where no bucket is configured. */
+const localRenderRequests = new Map<string, any>();
+
 export async function executePersistedRender(jobId: string): Promise<void> {
   const job = await loadJob(jobId);
   if (!job) throw new Error(`Render job ${jobId} not found`);
   if (job.status === 'done' || job.status === 'error') return;
   if (!(await claimRenderJob(job))) return;
-  const request = await loadJson<{ edl: any }>(`renders/${jobId}/request.json`);
+  const request =
+    (await loadJson<{ edl: any }>(`renders/${jobId}/request.json`)) ||
+    (localRenderRequests.has(jobId) ? { edl: localRenderRequests.get(jobId) } : null);
   if (!request?.edl) throw new Error(`Render request missing for ${jobId}`);
+  localRenderRequests.delete(jobId);
   await executeRender(jobId, request.edl);
 }
 
@@ -3153,6 +3194,7 @@ export function createRenderRouter(): Router {
       };
       await persistJob(job);
       await saveJson(`renders/${id}/request.json`, { edl }, 'temp');
+      localRenderRequests.set(id, edl); // local dev without a bucket: the in-process worker reads it here
       if (projectId) await writeProjectLock('render', projectId, id);
       await enqueueWorker('render', id);
 

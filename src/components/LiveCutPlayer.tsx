@@ -2,6 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, Pause, Play } from 'lucide-react';
 import type { EditDecisionList, EdlClip } from '../utils/edl';
 import { mediaUrlFromGcs } from '../utils/mediaVault';
+import {
+  aspectRatioValue,
+  coverCrop,
+  drawPersonOverBackground,
+  ensureSegmenter,
+  segmentationAvailable,
+  segmentPerson,
+} from '../utils/segmentation';
 
 /**
  * Live Cut player — plays the compiled edit (EDL) straight from the source takes, in real time,
@@ -84,6 +92,70 @@ export function editKeyForEdlId(id: string): string | null {
 }
 
 const stroke: React.CSSProperties = { WebkitTextStroke: '0.14em #000', paintOrder: 'stroke fill' };
+
+/**
+ * Instant virtual-background preview: while a shot's full-quality background is still being made
+ * on the server, cut the person out in the browser as the take plays (same segmentation as the
+ * shoot preview) and draw them on the video's background. The server version replaces it as soon
+ * as it's ready (the clip then plays the finished file and this isn't shown).
+ */
+const BackgroundPreview: React.FC<{
+  /** The take's <video> element (looked up each frame; it may mount after this does). */
+  getVideo: () => HTMLVideoElement | undefined;
+  videoKey: string;
+  backgroundUrl: string;
+  aspectRatio: string;
+  zoom: number;
+}> = ({ getVideo, videoKey, backgroundUrl, aspectRatio, zoom }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (!segmentationAvailable()) return;
+    let cancelled = false;
+    let raf = 0;
+    const bg = new Image();
+    bg.src = backgroundUrl;
+    const draw = () => {
+      if (cancelled) return;
+      raf = requestAnimationFrame(draw);
+      const c = canvasRef.current;
+      const video = getVideo();
+      if (!c || !video || video.readyState < 2 || !video.videoWidth || !bg.complete || !bg.naturalWidth) return;
+      const crop = coverCrop(video.videoWidth, video.videoHeight, aspectRatioValue(aspectRatio));
+      const mask = segmentPerson(video, { crop });
+      if (!mask) return;
+      const scale = Math.min(1, 720 / Math.max(crop.sw, crop.sh));
+      const w = Math.max(2, Math.round(crop.sw * scale));
+      const h = Math.max(2, Math.round(crop.sh * scale));
+      if (c.width !== w || c.height !== h) {
+        c.width = w;
+        c.height = h;
+      }
+      const ctx = c.getContext('2d');
+      if (!ctx) return;
+      drawPersonOverBackground(ctx, video, mask, bg, 2, crop);
+      if (!ready) setReady(true);
+    };
+    ensureSegmenter()
+      .then(() => {
+        if (!cancelled) raf = requestAnimationFrame(draw);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoKey, backgroundUrl, aspectRatio]);
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden
+      className="absolute inset-0 w-full h-full object-cover transition-transform duration-150 pointer-events-none"
+      style={{ opacity: ready ? 1 : 0, transform: `scale(${zoom})` }}
+    />
+  );
+};
 
 export const LiveCutPlayer: React.FC<{
   edl: EditDecisionList | null;
@@ -344,6 +416,15 @@ export const LiveCutPlayer: React.FC<{
             }}
           />
         ))}
+        {piece?.kind === 'video' && clip?.matteBackgroundUrl && (
+          <BackgroundPreview
+            getVideo={() => videos.current.get(piece.url!)}
+            videoKey={piece.url!}
+            backgroundUrl={playable(clip.matteBackgroundUrl) || clip.matteBackgroundUrl}
+            aspectRatio={aspectRatio}
+            zoom={piece.zoom}
+          />
+        )}
         {piece?.kind === 'image' && piece.url && (
           <img src={piece.url} alt="" className="absolute inset-0 w-full h-full object-cover" />
         )}

@@ -22,6 +22,8 @@ const MODEL_FILE = 'rvm_mobilenetv3_fp32.onnx';
 const MAX_SIDE = Number(process.env.MATTE_MAX_SIDE) || 1280;
 /** Talking-head video at 24 fps looks the same and is 20% less work than 30. */
 const FPS = Number(process.env.MATTE_FPS) || 24;
+/** Long side of the copy RVM's encoder looks at (its cost scales with this, not the output size). */
+const MATTE_ENCODER_PX = Number(process.env.MATTE_ENCODER_PX) || 256;
 
 export type MatteOptions = {
   inputPath: string;
@@ -253,9 +255,14 @@ function frameReader(stream: NodeJS.ReadableStream, n: number) {
   };
 }
 
-function write(proc: ChildProcessWithoutNullStreams, data: Buffer): Promise<void> {
+/**
+ * Queue a frame for ffmpeg. Up to a few frames may wait in the pipe while the next ones are
+ * computed; waiting for every frame to drain made the pipe, not the model, the bottleneck.
+ */
+function write(proc: ChildProcessWithoutNullStreams, data: Buffer, maxQueued = 6 * data.length): Promise<void> {
+  proc.stdin.write(data);
+  if (proc.stdin.writableLength <= maxQueued) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    if (proc.stdin.write(data)) return resolve();
     const onErr = (e: Error) => reject(e);
     proc.stdin.once('error', onErr);
     proc.stdin.once('drain', () => {
@@ -299,36 +306,70 @@ async function matteLane(
 
   const nextFrame = frameReader(decoder.stdout, W * H * 3);
   const plane = W * H;
-  const src = new Float32Array(3 * plane);
-  const outFrame = Buffer.alloc(plane * 3);
+  // Two input buffers: the next frame is prepared while the model is still busy with this one.
+  const srcBufs = [new Float32Array(3 * plane), new Float32Array(3 * plane)];
+  const toPlanar = (f: Buffer, dst: Float32Array) => {
+    for (let i = 0, j = 0; i < plane; i++, j += 3) {
+      dst[i] = f[j] / 255;
+      dst[plane + i] = f[j + 1] / 255;
+      dst[2 * plane + i] = f[j + 2] / 255;
+    }
+  };
+  /** Person (RVM's colour-cleaned foreground) over the background, as one rgb24 frame. */
+  const composite = (res: any): Buffer => {
+    const fgr = res.fgr.data as Float32Array;
+    const pha = keepMainPerson(res.pha.data as Float32Array, W, H);
+    // A fresh buffer per frame: the encoder pipe may still hold the previous one.
+    const out = Buffer.allocUnsafe(plane * 3);
+    for (let i = 0, j = 0; i < plane; i++, j += 3) {
+      const a = pha[i];
+      if (a <= 0.002) {
+        out[j] = bg[j];
+        out[j + 1] = bg[j + 1];
+        out[j + 2] = bg[j + 2];
+        continue;
+      }
+      const b = 1 - a;
+      const a255 = a * 255;
+      out[j] = Math.max(0, Math.min(255, fgr[i] * a255 + bg[j] * b));
+      out[j + 1] = Math.max(0, Math.min(255, fgr[plane + i] * a255 + bg[j + 1] * b));
+      out[j + 2] = Math.max(0, Math.min(255, fgr[2 * plane + i] * a255 + bg[j + 2] * b));
+    }
+    return out;
+  };
   // Recurrent state starts empty; RVM grows it on the first frame.
   let rec: Record<string, import('onnxruntime-node').Tensor> = {};
   for (const k of ['r1i', 'r2i', 'r3i', 'r4i']) rec[k] = new ort.Tensor('float32', new Float32Array([0]), [1, 1, 1, 1]);
-  // RVM's encoder sees ~320px (0.25 at 1280, the recommended ratio); its refiner restores full-res edges.
-  const ratio = new ort.Tensor('float32', new Float32Array([Math.min(1, 320 / Math.max(W, H))]), [1]);
+  // RVM's encoder sees a small copy (~256px long side, ~27% faster than 320 with the same edges);
+  // its refiner restores full-res hair and edges from the real frame.
+  const ratio = new ort.Tensor('float32', new Float32Array([Math.min(1, MATTE_ENCODER_PX / Math.max(W, H))]), [1]);
 
+  // Pipeline: while the model runs on frame N (native threads), JavaScript composites and
+  // writes frame N-1 and prepares frame N+1. Frames stay in order; the model's memory
+  // (recurrent state) still flows frame to frame.
   let frames = 0;
+  let cur = 0;
+  let prevResult: any = null;
   try {
-    for (;;) {
-      const f = await nextFrame();
-      if (!f) break;
-      for (let i = 0, j = 0; i < plane; i++, j += 3) {
-        src[i] = f[j] / 255;
-        src[plane + i] = f[j + 1] / 255;
-        src[2 * plane + i] = f[j + 2] / 255;
+    const first = await nextFrame();
+    if (first) {
+      toPlanar(first, srcBufs[cur]);
+      for (;;) {
+        const running = session.run({ src: new ort.Tensor('float32', srcBufs[cur], [1, 3, H, W]), ...rec, downsample_ratio: ratio });
+        if (prevResult) {
+          await write(encoder, composite(prevResult));
+          frames++;
+          onFrame();
+        }
+        const nf = await nextFrame();
+        if (nf) toPlanar(nf, srcBufs[1 - cur]);
+        const res = await running;
+        rec = { r1i: res.r1o, r2i: res.r2o, r3i: res.r3o, r4i: res.r4o };
+        prevResult = res;
+        if (!nf) break;
+        cur = 1 - cur;
       }
-      const res = await session.run({ src: new ort.Tensor('float32', src, [1, 3, H, W]), ...rec, downsample_ratio: ratio });
-      rec = { r1i: res.r1o, r2i: res.r2o, r3i: res.r3o, r4i: res.r4o };
-      const fgr = res.fgr.data as Float32Array;
-      const pha = keepMainPerson(res.pha.data as Float32Array, W, H);
-      for (let i = 0, j = 0; i < plane; i++, j += 3) {
-        const a = pha[i];
-        const b = 1 - a;
-        outFrame[j] = Math.max(0, Math.min(255, fgr[i] * 255 * a + bg[j] * b));
-        outFrame[j + 1] = Math.max(0, Math.min(255, fgr[plane + i] * 255 * a + bg[j + 1] * b));
-        outFrame[j + 2] = Math.max(0, Math.min(255, fgr[2 * plane + i] * 255 * a + bg[j + 2] * b));
-      }
-      await write(encoder, outFrame);
+      await write(encoder, composite(prevResult));
       frames++;
       onFrame();
     }

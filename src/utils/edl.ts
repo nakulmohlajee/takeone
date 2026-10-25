@@ -93,6 +93,11 @@ export interface EdlClip {
   mimeType?: string;
   /** 480p proxy for critic rough cuts (final always uses mediaUrl/source) */
   proxyUrl?: string;
+  /**
+   * Virtual background still to be added to this plain-camera take: the export cuts the person
+   * out (RVM) and places them on this picture before assembling. Absent once the take is matted.
+   */
+  matteBackgroundUrl?: string;
   /** Director compiler: word-level captions in clip-local time (karaoke / bold pop) */
   captionWords?: EdlCaptionWord[];
   /** Director compiler: text pops / meme text in clip-local time */

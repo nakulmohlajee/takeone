@@ -290,6 +290,9 @@ export const DirectorsCutView: React.FC<DirectorsCutViewProps> = ({
           sc.overlayLayout,
           sc.virtualBackgroundBaked,
           sc.virtualBackgroundMode,
+          // A finished background job swaps the preview to the server-made file.
+          sc.matteStatus,
+          sc.mattedGcsPath,
         ]),
       }),
     [aspectRatio, prefs, project.scenes]
